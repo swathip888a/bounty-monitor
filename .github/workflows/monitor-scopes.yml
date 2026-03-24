@@ -1,10 +1,14 @@
 name: Monitor Bug Bounty Scope Changes
 
+# Add permissions for GitHub token
+permissions:
+  contents: write
+  actions: read
+
 on:
   schedule:
-    # Runs every 30 minutes
     - cron: '*/30 * * * *'
-  workflow_dispatch:  # Allows manual trigger from GitHub UI
+  workflow_dispatch:
 
 jobs:
   monitor:
@@ -13,7 +17,10 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+          
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -71,12 +78,10 @@ jobs:
           def find_new_scopes(prev_data, curr_data):
               """Compare and find newly added scopes"""
               if not prev_data:
-                  # First run - no previous data to compare
                   return []
               
               changes = []
               
-              # Create maps for quick lookup
               prev_programs = {}
               for prog in prev_data.get('programs', []):
                   prev_programs[prog['name']] = set(prog.get('scopes', []))
@@ -85,7 +90,6 @@ jobs:
               for prog in curr_data.get('programs', []):
                   curr_programs[prog['name']] = set(prog.get('scopes', []))
               
-              # Check for new scopes in existing programs
               for prog_name, curr_scopes in curr_programs.items():
                   prev_scopes = prev_programs.get(prog_name, set())
                   new_scopes = curr_scopes - prev_scopes
@@ -97,7 +101,6 @@ jobs:
                           'type': 'new_scope'
                       })
               
-              # Check for completely new programs
               for prog_name in curr_programs.keys() - prev_programs.keys():
                   changes.append({
                       'program': prog_name,
@@ -112,7 +115,6 @@ jobs:
               if not DISCORD_WEBHOOK:
                   return
               
-              # Platform emoji mapping
               emojis = {
                   'hackerone': '🟠',
                   'bugcrowd': '🐞',
@@ -122,13 +124,11 @@ jobs:
               }
               emoji = emojis.get(platform, '📢')
               
-              # Determine notification type
               if change_type == 'new_program':
                   header = f"{emoji} **NEW PROGRAM ADDED!** {emoji}"
               else:
                   header = f"{emoji} **New Scope Added**"
               
-              # Build scopes list (max 10 per message to avoid Discord limits)
               scopes_text = ""
               for scope in new_scopes[:10]:
                   scopes_text += f"• `{scope}`\n"
@@ -136,45 +136,25 @@ jobs:
               if len(new_scopes) > 10:
                   scopes_text += f"• *and {len(new_scopes) - 10} more...*"
               
-              # Create Discord embed for better formatting
               embed = {
                   "title": header,
                   "color": 0x00ff00 if change_type == 'new_program' else 0x0099ff,
                   "fields": [
-                      {
-                          "name": "Platform",
-                          "value": platform.title(),
-                          "inline": True
-                      },
-                      {
-                          "name": "Program",
-                          "value": program,
-                          "inline": True
-                      },
-                      {
-                          "name": "Added Scopes",
-                          "value": scopes_text if scopes_text else "None",
-                          "inline": False
-                      },
-                      {
-                          "name": "Time Detected",
-                          "value": datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC'),
-                          "inline": False
-                      }
+                      {"name": "Platform", "value": platform.title(), "inline": True},
+                      {"name": "Program", "value": program, "inline": True},
+                      {"name": "Added Scopes", "value": scopes_text if scopes_text else "None", "inline": False},
+                      {"name": "Time Detected", "value": datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC'), "inline": False}
                   ],
-                  "footer": {
-                      "text": "Bounty Scope Monitor • Updates every 30 minutes"
-                  }
+                  "footer": {"text": "Bounty Scope Monitor • Updates every 30 minutes"}
               }
               
-              # Send to Discord
               payload = {"embeds": [embed]}
               try:
                   response = requests.post(DISCORD_WEBHOOK, json=payload)
                   response.raise_for_status()
                   print(f"✅ Sent notification for {platform}/{program}")
               except Exception as e:
-                  print(f"❌ Failed to send Discord notification: {e}")
+                  print(f"❌ Failed to send: {e}")
           
           def main():
               print(f"🔍 Starting scan at {datetime.utcnow().isoformat()}")
@@ -185,22 +165,17 @@ jobs:
               for platform in PLATFORMS:
                   print(f"\n📡 Checking {platform.title()}...")
                   
-                  # Fetch current data
                   curr_data = fetch_current_data(platform)
                   if not curr_data:
                       continue
                   
-                  # Load previous data
                   prev_data = load_previous_data(platform)
-                  
-                  # Find changes
                   changes = find_new_scopes(prev_data, curr_data)
                   
                   if changes:
                       changes_found = True
                       print(f"   Found {len(changes)} change(s)!")
                       
-                      # Send notifications for each change
                       for change in changes:
                           print(f"   → {change['program']}: {len(change['new_scopes'])} new scope(s)")
                           send_discord_notification(
@@ -212,7 +187,6 @@ jobs:
                   else:
                       print(f"   No changes detected")
                   
-                  # Save current data for next run
                   save_current_data(platform, curr_data)
               
               if not changes_found:
@@ -230,7 +204,7 @@ jobs:
       - name: Commit and push baseline data
         run: |
           git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.github.com"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add data/
-          git diff --quiet && git diff --staged --quiet || git commit -m "Update baseline data [skip ci]"
-          git push
+          git diff --quiet && git diff --staged --quiet || git commit -m "Update baseline data [skip ci]" || true
+          git push || true
