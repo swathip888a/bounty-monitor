@@ -1,6 +1,5 @@
 name: Monitor Bug Bounty Scope Changes
 
-# Add permissions for GitHub token
 permissions:
   contents: write
   actions: read
@@ -200,6 +199,17 @@ jobs:
           if __name__ == "__main__":
               main()
           EOF
+          
+      - name: Send test notification to Discord
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          curl -X POST -H "Content-Type: application/json" \
+            -d '{
+              "content": "✅ **TEST NOTIFICATION**\n\nYour bounty monitor is working correctly!\n\nPlatform: HackerOne\nProgram: Test Program\nAdded Scopes:\n• test.example.com\n• *.test.com\n\n⏰ Time: This is a test message to verify Discord integration.",
+              "username": "Bounty Monitor Test"
+            }' \
+            $DISCORD_WEBHOOK
           
       - name: Commit and push baseline data
         run: |
