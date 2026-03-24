@@ -1,0 +1,236 @@
+name: Monitor Bug Bounty Scope Changes
+
+on:
+  schedule:
+    # Runs every 30 minutes
+    - cron: '*/30 * * * *'
+  workflow_dispatch:  # Allows manual trigger from GitHub UI
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          
+      - name: Install dependencies
+        run: |
+          pip install requests
+          
+      - name: Create data directory
+        run: mkdir -p data
+        
+      - name: Run scope monitor
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          python << 'EOF'
+          import json
+          import requests
+          import os
+          from datetime import datetime
+          from pathlib import Path
+          
+          # Configuration
+          DISCORD_WEBHOOK = os.environ.get('DISCORD_WEBHOOK')
+          GITHUB_RAW = "https://raw.githubusercontent.com/arkadiyt/bounty-targets-data/main/data"
+          PLATFORMS = ["hackerone", "bugcrowd", "yeswehack", "intigriti", "federacy"]
+          DATA_DIR = Path("data")
+          
+          def fetch_current_data(platform):
+              """Fetch latest data from GitHub"""
+              url = f"{GITHUB_RAW}/{platform}_data.json"
+              try:
+                  response = requests.get(url, timeout=30)
+                  response.raise_for_status()
+                  return response.json()
+              except Exception as e:
+                  print(f"❌ Error fetching {platform}: {e}")
+                  return None
+          
+          def load_previous_data(platform):
+              """Load previously stored data"""
+              file_path = DATA_DIR / f"{platform}_data.json"
+              if file_path.exists():
+                  with open(file_path, 'r') as f:
+                      return json.load(f)
+              return None
+          
+          def save_current_data(platform, data):
+              """Save current data for future comparison"""
+              file_path = DATA_DIR / f"{platform}_data.json"
+              with open(file_path, 'w') as f:
+                  json.dump(data, f, indent=2)
+          
+          def find_new_scopes(prev_data, curr_data):
+              """Compare and find newly added scopes"""
+              if not prev_data:
+                  # First run - no previous data to compare
+                  return []
+              
+              changes = []
+              
+              # Create maps for quick lookup
+              prev_programs = {}
+              for prog in prev_data.get('programs', []):
+                  prev_programs[prog['name']] = set(prog.get('scopes', []))
+              
+              curr_programs = {}
+              for prog in curr_data.get('programs', []):
+                  curr_programs[prog['name']] = set(prog.get('scopes', []))
+              
+              # Check for new scopes in existing programs
+              for prog_name, curr_scopes in curr_programs.items():
+                  prev_scopes = prev_programs.get(prog_name, set())
+                  new_scopes = curr_scopes - prev_scopes
+                  
+                  if new_scopes:
+                      changes.append({
+                          'program': prog_name,
+                          'new_scopes': list(new_scopes),
+                          'type': 'new_scope'
+                      })
+              
+              # Check for completely new programs
+              for prog_name in curr_programs.keys() - prev_programs.keys():
+                  changes.append({
+                      'program': prog_name,
+                      'new_scopes': list(curr_programs[prog_name]),
+                      'type': 'new_program'
+                  })
+              
+              return changes
+          
+          def send_discord_notification(platform, program, new_scopes, change_type):
+              """Send formatted notification to Discord"""
+              if not DISCORD_WEBHOOK:
+                  return
+              
+              # Platform emoji mapping
+              emojis = {
+                  'hackerone': '🟠',
+                  'bugcrowd': '🐞',
+                  'yeswehack': '✅',
+                  'intigriti': '🔷',
+                  'federacy': '⚡'
+              }
+              emoji = emojis.get(platform, '📢')
+              
+              # Determine notification type
+              if change_type == 'new_program':
+                  header = f"{emoji} **NEW PROGRAM ADDED!** {emoji}"
+              else:
+                  header = f"{emoji} **New Scope Added**"
+              
+              # Build scopes list (max 10 per message to avoid Discord limits)
+              scopes_text = ""
+              for scope in new_scopes[:10]:
+                  scopes_text += f"• `{scope}`\n"
+              
+              if len(new_scopes) > 10:
+                  scopes_text += f"• *and {len(new_scopes) - 10} more...*"
+              
+              # Create Discord embed for better formatting
+              embed = {
+                  "title": header,
+                  "color": 0x00ff00 if change_type == 'new_program' else 0x0099ff,
+                  "fields": [
+                      {
+                          "name": "Platform",
+                          "value": platform.title(),
+                          "inline": True
+                      },
+                      {
+                          "name": "Program",
+                          "value": program,
+                          "inline": True
+                      },
+                      {
+                          "name": "Added Scopes",
+                          "value": scopes_text if scopes_text else "None",
+                          "inline": False
+                      },
+                      {
+                          "name": "Time Detected",
+                          "value": datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC'),
+                          "inline": False
+                      }
+                  ],
+                  "footer": {
+                      "text": "Bounty Scope Monitor • Updates every 30 minutes"
+                  }
+              }
+              
+              # Send to Discord
+              payload = {"embeds": [embed]}
+              try:
+                  response = requests.post(DISCORD_WEBHOOK, json=payload)
+                  response.raise_for_status()
+                  print(f"✅ Sent notification for {platform}/{program}")
+              except Exception as e:
+                  print(f"❌ Failed to send Discord notification: {e}")
+          
+          def main():
+              print(f"🔍 Starting scan at {datetime.utcnow().isoformat()}")
+              print("=" * 50)
+              
+              changes_found = False
+              
+              for platform in PLATFORMS:
+                  print(f"\n📡 Checking {platform.title()}...")
+                  
+                  # Fetch current data
+                  curr_data = fetch_current_data(platform)
+                  if not curr_data:
+                      continue
+                  
+                  # Load previous data
+                  prev_data = load_previous_data(platform)
+                  
+                  # Find changes
+                  changes = find_new_scopes(prev_data, curr_data)
+                  
+                  if changes:
+                      changes_found = True
+                      print(f"   Found {len(changes)} change(s)!")
+                      
+                      # Send notifications for each change
+                      for change in changes:
+                          print(f"   → {change['program']}: {len(change['new_scopes'])} new scope(s)")
+                          send_discord_notification(
+                              platform,
+                              change['program'],
+                              change['new_scopes'],
+                              change['type']
+                          )
+                  else:
+                      print(f"   No changes detected")
+                  
+                  # Save current data for next run
+                  save_current_data(platform, curr_data)
+              
+              if not changes_found:
+                  print("\n✨ No new assets found across all platforms")
+              else:
+                  print("\n🎉 Notifications sent for all changes!")
+              
+              print("=" * 50)
+              print(f"✅ Scan completed at {datetime.utcnow().isoformat()}")
+          
+          if __name__ == "__main__":
+              main()
+          EOF
+          
+      - name: Commit and push baseline data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.github.com"
+          git add data/
+          git diff --quiet && git diff --staged --quiet || git commit -m "Update baseline data [skip ci]"
+          git push
